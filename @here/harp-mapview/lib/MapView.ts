@@ -57,6 +57,7 @@ import { FrustumIntersection } from "./FrustumIntersection";
 import { overlayOnElevation } from "./geometry/overlayOnElevation";
 import { TileGeometryManager } from "./geometry/TileGeometryManager";
 import { MapViewImageCache } from "./image/MapViewImageCache";
+import { PickParams } from "./IntersectParams";
 import { MapAnchors } from "./MapAnchors";
 import { MapObjectAdapter } from "./MapObjectAdapter";
 import { MapViewFog } from "./MapViewFog";
@@ -2514,8 +2515,8 @@ export class MapView extends THREE.EventDispatcher {
      * @param y - The Y position in css/client coordinates (without applied display ratio).
      * @returns The list of intersection results.
      */
-    intersectMapObjects(x: number, y: number): PickResult[] {
-        return this.m_pickHandler.intersectMapObjects(x, y);
+    intersectMapObjects(x: number, y: number, parameters?: PickParams): PickResult[] {
+        return this.m_pickHandler.intersectMapObjects(x, y, parameters);
     }
 
     /**

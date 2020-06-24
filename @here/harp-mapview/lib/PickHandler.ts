@@ -8,9 +8,12 @@ import { GeometryType, getFeatureId, Technique } from "@here/harp-datasource-pro
 import * as THREE from "three";
 
 import { OrientedBox3 } from "@here/harp-geoutils";
+import { LoggerManager, PerformanceTimer } from "@here/harp-utils";
+import { PickParams } from "./IntersectParams";
 import { MapView } from "./MapView";
 import { MapViewPoints } from "./MapViewPoints";
-import { TileFeatureData } from "./Tile";
+import { PickListener } from "./PickListener";
+import { Tile, TileFeatureData } from "./Tile";
 
 /**
  * Describes the general type of a picked object.
@@ -102,6 +105,7 @@ export interface PickResult {
 }
 
 const tmpOBB = new OrientedBox3();
+const logger = LoggerManager.instance.create("PickHandler");
 
 /**
  * Handles the picking of scene geometry and roads.
@@ -123,20 +127,118 @@ export class PickHandler {
      * @param y - The Y position in CSS/client coordinates, without the applied display ratio.
      * @returns the list of intersection results.
      */
-    intersectMapObjects(x: number, y: number): PickResult[] {
+    intersectMapObjects(x: number, y: number, parameters?: PickParams): PickResult[] {
+        const start = PerformanceTimer.now();
         const worldPos = this.mapView.getNormalizedScreenCoordinates(x, y);
         const rayCaster = this.mapView.raycasterFromScreenPoint(x, y);
-        const pickResults: PickResult[] = [];
+
+        const pickListener = new PickListener(parameters);
 
         if (this.mapView.textElementsRenderer !== undefined) {
             const { clientWidth, clientHeight } = this.mapView.canvas;
             const screenX = worldPos.x * clientWidth * 0.5;
             const screenY = worldPos.y * clientHeight * 0.5;
             const scenePosition = new THREE.Vector2(screenX, screenY);
-            this.mapView.textElementsRenderer.pickTextElements(scenePosition, pickResults);
+            this.mapView.textElementsRenderer.pickTextElements(scenePosition, pickListener);
         }
 
         const intersects: THREE.Intersection[] = [];
+        const intersectedTiles = this.getIntersectedTiles(rayCaster);
+
+        for (const { tile } of intersectedTiles) {
+            intersects.length = 0;
+            for (const object of tile.objects) {
+                rayCaster.intersectObject(object, true, intersects);
+                for (const intersect of intersects) {
+                    const pickResult = this.convertToResult(intersect);
+                    pickListener.addResult(pickResult);
+                    if (pickListener.done) {
+                        break;
+                    }
+                }
+                if (pickListener.done) {
+                    break;
+                }
+            }
+
+            if (pickListener.done) {
+                break;
+            }
+        }
+
+        pickListener.results.sort((a: PickResult, b: PickResult) => {
+            return a.distance - b.distance;
+        });
+
+        const end = PerformanceTimer.now();
+        const elapsed = end - start;
+        logger.log(`Picking took ${elapsed} ms`);
+        return pickListener.results;
+    }
+
+    private convertToResult(intersection: THREE.Intersection): PickResult {
+        const pickResult: PickResult = {
+            type: PickObjectType.Unspecified,
+            point: intersection.point,
+            distance: intersection.distance,
+            intersection
+        };
+
+        if (
+            intersection.object.userData === undefined ||
+            intersection.object.userData.feature === undefined
+        ) {
+            return pickResult;
+        }
+
+        const featureData: TileFeatureData = intersection.object.userData.feature;
+        if (this.enablePickTechnique) {
+            pickResult.technique = intersection.object.userData.technique;
+        }
+
+        this.addObjInfo(featureData, intersection, pickResult);
+
+        if (featureData.objInfos !== undefined) {
+            const featureId =
+                featureData.objInfos.length === 1
+                    ? getFeatureId(featureData.objInfos[0])
+                    : undefined;
+            pickResult.featureId = featureId;
+        }
+
+        let pickObjectType: PickObjectType;
+
+        switch (featureData.geometryType) {
+            case GeometryType.Point:
+            case GeometryType.Text:
+                pickObjectType = PickObjectType.Point;
+                break;
+            case GeometryType.Line:
+            case GeometryType.ExtrudedLine:
+            case GeometryType.SolidLine:
+            case GeometryType.TextPath:
+                pickObjectType = PickObjectType.Line;
+                break;
+            case GeometryType.Polygon:
+            case GeometryType.ExtrudedPolygon:
+                pickObjectType = PickObjectType.Area;
+                break;
+            case GeometryType.Object3D:
+                pickObjectType = PickObjectType.Object3D;
+                break;
+            default:
+                pickObjectType = PickObjectType.Unspecified;
+        }
+
+        pickResult.type = pickObjectType;
+        return pickResult;
+    }
+
+    private getIntersectedTiles(
+        rayCaster: THREE.Raycaster
+    ): Array<{ tile: Tile; distance: number }> {
+        const tiles = new Array<{ tile: Tile; distance: number }>();
+
         const tileList = this.mapView.visibleTileSet.dataSourceTileList;
         tileList.forEach(dataSourceTileList => {
             dataSourceTileList.renderedTiles.forEach(tile => {
@@ -146,77 +248,19 @@ export class PickHandler {
                 // MapView
                 const worldOffsetX = tile.computeWorldOffsetX();
                 tmpOBB.position.x += worldOffsetX;
-
-                if (tmpOBB.intersectsRay(rayCaster.ray) !== undefined) {
-                    rayCaster.intersectObjects(tile.objects, true, intersects);
+                const distance = tmpOBB.intersectsRay(rayCaster.ray);
+                if (distance !== undefined) {
+                    tiles.push({ tile, distance });
                 }
             });
         });
 
-        for (const intersect of intersects) {
-            const pickResult: PickResult = {
-                type: PickObjectType.Unspecified,
-                point: intersect.point,
-                distance: intersect.distance,
-                intersection: intersect
-            };
-
-            if (
-                intersect.object.userData === undefined ||
-                intersect.object.userData.feature === undefined
-            ) {
-                pickResults.push(pickResult);
-                continue;
+        tiles.sort(
+            (lhs: { tile: Tile; distance: number }, rhs: { tile: Tile; distance: number }) => {
+                return lhs.distance - rhs.distance;
             }
-
-            const featureData: TileFeatureData = intersect.object.userData.feature;
-            if (this.enablePickTechnique) {
-                pickResult.technique = intersect.object.userData.technique;
-            }
-
-            this.addObjInfo(featureData, intersect, pickResult);
-
-            if (featureData.objInfos !== undefined) {
-                const featureId =
-                    featureData.objInfos.length === 1
-                        ? getFeatureId(featureData.objInfos[0])
-                        : undefined;
-                pickResult.featureId = featureId;
-            }
-
-            let pickObjectType: PickObjectType;
-
-            switch (featureData.geometryType) {
-                case GeometryType.Point:
-                case GeometryType.Text:
-                    pickObjectType = PickObjectType.Point;
-                    break;
-                case GeometryType.Line:
-                case GeometryType.ExtrudedLine:
-                case GeometryType.SolidLine:
-                case GeometryType.TextPath:
-                    pickObjectType = PickObjectType.Line;
-                    break;
-                case GeometryType.Polygon:
-                case GeometryType.ExtrudedPolygon:
-                    pickObjectType = PickObjectType.Area;
-                    break;
-                case GeometryType.Object3D:
-                    pickObjectType = PickObjectType.Object3D;
-                    break;
-                default:
-                    pickObjectType = PickObjectType.Unspecified;
-            }
-
-            pickResult.type = pickObjectType;
-            pickResults.push(pickResult);
-        }
-
-        pickResults.sort((a: PickResult, b: PickResult) => {
-            return a.distance - b.distance;
-        });
-
-        return pickResults;
+        );
+        return tiles;
     }
 
     private addObjInfo(

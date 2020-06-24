@@ -29,6 +29,7 @@ import { DataSource } from "../DataSource";
 import { debugContext } from "../DebugContext";
 import { overlayTextElement } from "../geometry/overlayOnElevation";
 import { PickObjectType, PickResult } from "../PickHandler";
+import { PickListener } from "../PickListener";
 import { PoiManager } from "../poi/PoiManager";
 import { PoiRenderer } from "../poi/PoiRenderer";
 import { PoiRendererFactory } from "../poi/PoiRendererFactory";
@@ -543,7 +544,7 @@ export class TextElementsRenderer {
      * @param screenPosition - Screen coordinate of picking position.
      * @param pickResults - Array filled with pick results.
      */
-    pickTextElements(screenPosition: THREE.Vector2, pickResults: PickResult[]) {
+    pickTextElements(screenPosition: THREE.Vector2, pickListener: PickListener) {
         const pickHandler = (pickData: any | undefined, pickObjectType: PickObjectType) => {
             const textElement = pickData as TextElement;
 
@@ -554,7 +555,7 @@ export class TextElementsRenderer {
             let isDuplicate = false;
 
             if (textElement.featureId !== undefined) {
-                isDuplicate = pickResults.some(pickResult => {
+                isDuplicate = pickListener.results.some(pickResult => {
                     return (
                         pickResult !== undefined &&
                         pickObjectType === pickResult.type &&
@@ -575,7 +576,7 @@ export class TextElementsRenderer {
                         text: textElement.text
                     };
 
-                    pickResults.push(pickResult);
+                    pickListener.addResult(pickResult);
                 }
             }
         };
@@ -583,6 +584,9 @@ export class TextElementsRenderer {
         for (const textRenderer of this.m_textRenderers) {
             textRenderer.textCanvas.pickText(screenPosition, (pickData: any | undefined) => {
                 pickHandler(pickData, PickObjectType.Text);
+                if (pickListener.done) {
+                    return;
+                }
             });
             textRenderer.poiRenderer.pickTextElements(
                 screenPosition,
