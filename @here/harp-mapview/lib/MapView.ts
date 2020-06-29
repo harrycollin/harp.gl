@@ -649,6 +649,8 @@ export interface MapViewOptions extends TextElementsRendererOptions, Partial<Loo
      * @beta
      */
     throttlingEnabled?: boolean;
+
+    maxBounds?: GeoBox;
 }
 
 /**
@@ -793,6 +795,7 @@ export class MapView extends THREE.EventDispatcher {
     private m_minZoomLevel: number = DEFAULT_MIN_ZOOM_LEVEL;
     private m_maxZoomLevel: number = DEFAULT_MAX_ZOOM_LEVEL;
     private readonly m_minCameraHeight: number = DEFAULT_MIN_CAMERA_HEIGHT;
+    private m_maxBounds?: GeoBox;
 
     private readonly m_screenCamera = new THREE.OrthographicCamera(-1, 1, 1, -1);
 
@@ -932,6 +935,10 @@ export class MapView extends THREE.EventDispatcher {
 
         if (this.m_options.minCameraHeight !== undefined) {
             this.m_minCameraHeight = this.m_options.minCameraHeight;
+        }
+
+        if (this.m_options.maxBounds !== undefined) {
+            this.m_maxBounds = this.m_options.maxBounds;
         }
 
         if (this.m_options.decoderUrl !== undefined) {
@@ -1889,6 +1896,14 @@ export class MapView extends THREE.EventDispatcher {
     set maxZoomLevel(zoomLevel: number) {
         this.m_maxZoomLevel = zoomLevel;
         this.update();
+    }
+
+    get maxBounds(): GeoBox | undefined {
+        return this.m_maxBounds;
+    }
+
+    set maxBounds(bounds: GeoBox | undefined) {
+        this.m_maxBounds = bounds;
     }
 
     /**
@@ -3101,12 +3116,7 @@ export class MapView extends THREE.EventDispatcher {
      * Derive the look at settings (i.e. target, zoom, ...) from the current camera.
      */
     private updateLookAtSettings() {
-        // tslint:disable-next-line: deprecation
-        const { target, distance } = MapViewUtils.getTargetAndDistance(
-            this.projection,
-            this.camera,
-            this.elevationProvider
-        );
+        const { target, distance } = MapViewUtils.getConstrainedTargetAndDistance(this);
 
         this.m_targetWorldPos.copy(target);
         this.m_targetGeoPos = this.projection.unprojectPoint(this.m_targetWorldPos);

@@ -768,7 +768,9 @@ export class MapControls extends THREE.EventDispatcher {
             this.m_maxTiltAngle
         );
 
-        if (resetZoomState) {
+        if (!this.inertiaEnabled) {
+            this.m_currentZoom = undefined;
+        } else if (resetZoomState) {
             this.m_targetedZoom = undefined;
             this.m_currentZoom = undefined;
         }

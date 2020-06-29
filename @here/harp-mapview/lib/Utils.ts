@@ -11,6 +11,7 @@ import {
     GeoCoordinates,
     GeoCoordLike,
     MathUtils,
+    OrientedBox3,
     Projection,
     ProjectionType,
     TileKey
@@ -18,6 +19,7 @@ import {
 import { EarthConstants } from "@here/harp-geoutils/lib/projection/EarthConstants";
 import { MapMeshBasicMaterial, MapMeshStandardMaterial } from "@here/harp-materials";
 import { assert, LoggerManager } from "@here/harp-utils";
+import { Box3 } from "three";
 import { ElevationProvider } from "./ElevationProvider";
 import { LodMesh } from "./geometry/LodMesh";
 import { MapView } from "./MapView";
@@ -319,6 +321,97 @@ export namespace MapViewUtils {
         return Math.abs(projection.groundDistance(location));
     }
 
+    export function getConstrainedTargetAndDistance(
+        mapView: MapView
+    ): { target: THREE.Vector3; distance: number } {
+        const projection = mapView.projection;
+        const camera = mapView.camera;
+        const maxBounds = mapView.maxBounds;
+        const elevationProvider = mapView.elevationProvider;
+
+        // tslint:disable-next-line: deprecation
+        const unconstrained = getTargetAndDistance(projection, camera, elevationProvider);
+
+        if (!maxBounds) {
+            return unconstrained;
+        }
+
+        if (projection.type === ProjectionType.Spherical) {
+            return unconstrained;
+        }
+
+        const worldMaxBounds = projection.projectBox(maxBounds, new Box3());
+        const boundsSize = worldMaxBounds.getSize(new THREE.Vector3());
+
+        const screenSize = mapView.renderer.getSize(new THREE.Vector2());
+        const viewWidth = calculateWorldSizeByFocalLength(
+            mapView.focalLength,
+            unconstrained.distance,
+            screenSize.width
+        );
+        const viewHeight = viewWidth * camera.aspect;
+        const scale = Math.max(viewWidth / boundsSize.x, viewHeight / boundsSize.y);
+        const hvWidth = viewWidth / 2;
+        const hvHeight = viewHeight / 2;
+
+        const constrained = {
+            target: unconstrained.target.clone(),
+            distance: unconstrained.distance
+        };
+
+        let isConstrained = false;
+        if (scale > 1) {
+            constrained.distance /= scale;
+            worldMaxBounds.getCenter(constrained.target);
+            isConstrained = true;
+            logger.log(`zoom in`);
+
+            const geoTarget = projection.unprojectPoint(constrained.target);
+            const { yaw, pitch } = MapViewUtils.extractAttitude(mapView, camera);
+            MapViewUtils.getCameraPositionFromTargetCoordinates(
+                geoTarget,
+                constrained.distance,
+                THREE.MathUtils.radToDeg(yaw),
+                THREE.MathUtils.radToDeg(pitch),
+                projection,
+                camera.position
+            );
+            camera.updateMatrixWorld(true);
+        } else {
+            if (constrained.target.x - hvWidth < worldMaxBounds.min.x) {
+                constrained.target.x = worldMaxBounds.min.x + hvWidth;
+                isConstrained = true;
+                logger.log(`right ${constrained.target.x - unconstrained.target.x}`);
+            }
+            if (constrained.target.x + hvWidth > worldMaxBounds.max.x) {
+                constrained.target.x = worldMaxBounds.max.x - hvWidth;
+                isConstrained = true;
+                logger.log(`left ${unconstrained.target.x - constrained.target.x}`);
+            }
+
+            if (constrained.target.y - hvHeight < worldMaxBounds.min.y) {
+                constrained.target.y = worldMaxBounds.min.y + hvHeight;
+                isConstrained = true;
+                logger.log(`up ${constrained.target.y - unconstrained.target.y}`);
+            }
+            if (constrained.target.y + hvHeight > worldMaxBounds.max.y) {
+                constrained.target.y = worldMaxBounds.max.y - hvHeight;
+                isConstrained = true;
+                logger.log(`down ${unconstrained.target.y - constrained.target.y}`);
+            }
+
+            if (isConstrained) {
+                camera.position.x += constrained.target.x - unconstrained.target.x;
+                camera.position.y += constrained.target.y - unconstrained.target.y;
+                camera.updateMatrix();
+                logger.log(
+                    `Target: ${unconstrained.target.x},${unconstrained.target.y} -> ${constrained.target.x}, ${constrained.target.y}`
+                );
+            }
+        }
+        logger.log(`done`);
+        return constrained;
+    }
     /**
      * @internal
      * @deprecated This method will be moved to MapView.
